@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Anki Voice – Review Endpoint Tester</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 24px; max-width: 760px; margin: 0 auto; }
+    h1 { margin: 0 0 8px; }
+    button { padding: 10px 14px; font-weight: 600; }
+    .log { white-space: pre-wrap; padding: 12px; background: #f6f8fa; border: 1px solid #e6edf3; border-radius: 8px; margin-top: 12px; min-height: 80px; }
+    .row { display: flex; gap: 12px; align-items: center; margin: 12px 0; }
+    .badge { padding: 2px 8px; border-radius: 999px; background: #eee; font-size: 12px; }
+    .badge.rec { background: #ffe5e5; color: #a00; }
+    .badge.listening { background: #eef; color: #33c; }
+    .kv { display: grid; grid-template-columns: 160px 1fr; gap: 8px 12px; margin-top: 12px; }
+    textarea { width: 100%; min-height: 80px; }
+  </style>
+</head>
+<body>
+  <h1>Review Endpoint Tester</h1>
+  <p>This page records a single utterance (voice activity detection), then POSTs it to <code>/api/review-chain</code> with test front/back text.</p>
+
+  <div class="kv">
+    <div>Front (test):</div>
+    <div><textarea id="front">Was bewirkt Calciumgluconat i.v. bei schwerer Hyperkaliämie?</textarea></div>
+    <div>Back (test):</div>
+    <div><textarea id="back">Stabilisierung der Myokardmembran; senkt nicht den Kaliumspiegel.</textarea></div>
+    <div>Language hint:</div>
+    <div><input id="lang" value="de" /></div>
+  </div>
+
+  <div class="row">
+    <button id="btn">Record one answer → Review</button>
+    <span id="state" class="badge">idle</span>
+  </div>
+
+  <div><strong>Transcript:</strong> <span id="transcript">—</span></div>
+  <div style="margin-top:6px;"><strong>Feedback:</strong></div>
+  <div id="feedback" class="log"></div>
+
+  <div style="margin-top:18px;"><strong>Debug log</strong></div>
+  <div id="log" class="log"></div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const btn = $("btn"), stateEl = $("state"), logEl = $("log");
+    const transcriptEl = $("transcript"), feedbackEl = $("feedback");
+    const frontEl = $("front"), backEl = $("back"), langEl = $("lang");
+
+    function log(...args) {
+      console.log(...args);
+      logEl.textContent += args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(" ") + "\n";
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    function setState(s, cls) {
+      stateEl.textContent = s;
+      stateEl.className = "badge" + (cls ? " " + cls : "");
+    }
+
+
+    async function recordOneUtterance() {
+    // VAD config
+    const rmsThreshold   = 0.02;    // 0..1, louder environment -> raise threshold a bit (e.g. 0.03)
+    const startFrames    = 4;       // consecutive speech frames to START
+    const endFrames      = 12;      // consecutive silence frames to STOP
+    const frameMs        = 50;      // analysis frame size
+    const maxUtteranceMs = 15000;   // safety cap
+    const timesliceMs    = 250;     // MediaRecorder chunk cadence
+
+    // Pick a supported mimeType in order of preference
+    const preferred = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/ogg;codecs=opus", // Firefox-friendly
+        "audio/mp4",             // Safari (if audio recording allowed)
+    ];
+    const supportedType =
+        preferred.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) ||
+        undefined; // let browser pick if none matched
+
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false
+    });
+
+    const src = ac.createMediaStreamSource(stream);
+    const analyser = ac.createAnalyser();
+    analyser.fftSize = 2048;
+    src.connect(analyser);
+    const timeData = new Uint8Array(analyser.fftSize);
+
+    let chunks = [];
+    let mediaRecorder;
+    try {
+        mediaRecorder = supportedType ? new MediaRecorder(stream, { mimeType: supportedType }) : new MediaRecorder(stream);
+    } catch {
+        mediaRecorder = new MediaRecorder(stream); // last resort
+    }
+
+    mediaRecorder.addEventListener("dataavailable", (ev) => {
+        if (ev.data && ev.data.size > 0) {
+        chunks.push(ev.data);
+        } else {
+        console.log("[STT] empty dataavailable chunk");
+        }
+    });
+
+    let speakingFrames = 0, silenceFrames = 0, recording = false;
+    const t0 = performance.now();
+
+    setState("listening…", "listening");
+    log("[STT] listening (VAD)… mime:", mediaRecorder.mimeType || supportedType || "(auto)");
+
+    function rms(buf) {
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) {
+        const v = (buf[i] - 128) / 128; // -1..1
+        sum += v * v;
+        }
+        return Math.sqrt(sum / buf.length);
+    }
+
+    function cleanup() {
+        setState("idle");
+        try { stream.getTracks().forEach(t => t.stop()); } catch {}
+        try { ac.close(); } catch {}
+    }
+
+    const done = new Promise((resolve) => {
+        function finalize() {
+        const blob = chunks.length ? new Blob(chunks, { type: mediaRecorder.mimeType || supportedType || "audio/webm" }) : null;
+        cleanup();
+        log("[STT] stop. blob bytes:", blob ? blob.size : 0);
+        resolve(blob);
+        }
+
+        function tick() {
+        analyser.getByteTimeDomainData(timeData);
+        const energy = rms(timeData);
+
+        if (!recording) {
+            speakingFrames = energy > rmsThreshold ? (speakingFrames + 1) : 0;
+            if (speakingFrames >= startFrames) {
+            // Start recorder with timeslice to ensure periodic dataavailable
+            try { mediaRecorder.start(timesliceMs); } catch {}
+            recording = true;
+            silenceFrames = 0;
+            setState("● recording…", "rec");
+            log("[STT] started recording (timeslice", timesliceMs, "ms)");
+            }
+        } else {
+            silenceFrames = energy <= rmsThreshold ? (silenceFrames + 1) : 0;
+            if (silenceFrames >= endFrames) {
+            // Request a final chunk before stopping, then give the browser a tick
+            try { mediaRecorder.requestData(); } catch {}
+            try { mediaRecorder.stop(); } catch {}
+            setTimeout(finalize, 150); // allow last dataavailable to fire
+            return;
+            }
+        }
+
+        // Safety cap
+        if (performance.now() - t0 > maxUtteranceMs) {
+            try { mediaRecorder.requestData(); } catch {}
+            try { mediaRecorder.stop(); } catch {}
+            setTimeout(finalize, 150);
+            return;
+        }
+        requestAnimationFrame(tick);
+        }
+        requestAnimationFrame(tick);
+    });
+
+    return done;
+    }
+
+
+
+    function blobToDataURL(blob) {
+      return new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result));
+        fr.onerror = reject;
+        fr.readAsDataURL(blob);
+      });
+    }
+
+    async function callReviewChain(audioDataUrl, front, back, language) {
+      log("[CHAIN] POST /api/review-chain …");
+      const r = await fetch("/api/review-chain", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ audioBase64: audioDataUrl, front, back, language })
+      });
+      const j = await r.json().catch(() => ({}));
+      log("[CHAIN] response:", j);
+      return j;
+    }
+
+    btn.addEventListener("click", async () => {
+      transcriptEl.textContent = "—";
+      feedbackEl.textContent = "";
+      logEl.textContent = "";
+
+      // Optional: play a short beep to make sure user knows when to speak
+      // (comment out if you don't want a cue)
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.frequency.value = 880; g.gain.value = 0.05;
+        o.connect(g).connect(ctx.destination);
+        o.start(); setTimeout(() => { o.stop(); ctx.close(); }, 150);
+      } catch {}
+
+      try {
+        const blob = await recordOneUtterance();
+        if (!blob) {
+          log("No speech captured.");
+          return;
+        }
+        const dataUrl = await blobToDataURL(blob);
+
+        const front = frontEl.value.trim();
+        const back  = backEl.value.trim();
+        const lang  = langEl.value.trim() || undefined;
+
+        const out = await callReviewChain(dataUrl, front, back, lang);
+        if (out.ok) {
+          transcriptEl.textContent = out.transcript || "(empty)";
+          feedbackEl.textContent = out.reply || "(no reply)";
+        } else {
+          transcriptEl.textContent = "(error)";
+          feedbackEl.textContent = out.error || "Unknown error";
+        }
+      } catch (e) {
+        log("Error:", e);
+      }
+    });
+  </script>
+</body>
+</html>

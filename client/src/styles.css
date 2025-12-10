@@ -1,0 +1,19 @@
+:root { font-family: system-ui, sans-serif; color-scheme: light dark; }
+body { margin: 0; }
+.app { max-width: 860px; margin: 0 auto; padding: 16px; }
+.toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+.chat {
+  border: 1px solid var(--border, #ddd); border-radius: 10px; padding: 12px;
+  display: flex; flex-direction: column; gap: 12px; min-height: 60vh;
+}
+.msg { display: flex; gap: 10px; }
+.msg .bubble {
+  padding: 10px 12px; border-radius: 10px; max-width: 75%;
+  background: rgba(0,0,0,0.05);
+}
+.msg.assistant .bubble { background: rgba(100, 149, 237, 0.2); }
+.msg.user .bubble { background: rgba(46, 204, 113, 0.2); align-self: flex-end; }
+.card-html { line-height: 1.5; }
+.controls { display: flex; gap: 8px; margin-top: 8px; }
+select, button, input { padding: 8px 10px; border-radius: 8px; border: 1px solid #ccc; }
+
