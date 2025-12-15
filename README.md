@@ -17,6 +17,26 @@ conversational review experience.
 -   Prefetch TTS for upcoming cards
 -   Optional free conversation mode
 
+
+
+## Models
+
+### Speech-to-Text (STT)
+- **Model:** `vaibhavs10/incredibly-fast-whisper`
+- **Provider:** Replicate
+- **Notes:** Automatic language detection by default
+
+### Text-to-Speech (TTS)
+- **Model:** `minimax/speech-02-hd`
+- **Provider:** Replicate
+- **Notes:** High-quality neural speech synthesis
+
+### Language Model (Evaluation / Feedback)
+- **Model:** `openai/gpt-4.1-mini`
+- **Provider:** OpenAI
+- **Mode:** Streaming responses (SSE)
+- **Usage:** Answer evaluation, feedback, free conversation
+
 ## Architecture
 
 ### Server
@@ -51,7 +71,6 @@ conversational review experience.
 ### Environment Variables
 
     REPLICATE_API_TOKEN=...
-    OPENAI_API_KEY=...
 
 Ensure **AnkiConnect** is running.
 
@@ -72,25 +91,17 @@ Ensure **AnkiConnect** is running.
 6.  Grade card
 7.  Next card
 
-## API (Simplified)
+## API 
 
-  Method   Path              Purpose
-  -------- ----------------- -----------------
-  GET      `/current`        get card
-  POST     `/start`          start session
-  POST     `/answer`         grade card
-  POST     `/tts`            text → audio
-  POST     `/stt`            audio → text
-  POST     `/review-chain`   full evaluation
-  POST     `/convoSend`      free chat
+| Method | Path            | Purpose           |
+|--------|-----------------|-------------------|
+| GET    | `/current`      | Get current card  |
+| POST   | `/start`        | Start session     |
+| POST   | `/answer`       | Grade card        |
+| POST   | `/tts`          | Text → audio      |
+| POST   | `/stt`          | Audio → text      |
+| POST   | `/review-chain` | Full evaluation   |
+| POST   | `/convoSend`    | Free conversation |
 
-## Notes
 
--   Grading advances card automatically
--   Back reveal is server-side
--   GPT feedback is short and streamed
--   Cloze fields preserved
 
-## License
-
-MIT
